@@ -1,0 +1,10 @@
+{
+  "name": "atende",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Plataforma de atendimento multicanal (reconstrução funcional do Umbler Talk)",
+  "scripts": { "start": "node server.js", "test": "node test.js && node test-ai.js" },
+  "engines": { "node": ">=22.13" },
+  "dependencies": { "@anthropic-ai/sdk": "^1.8.0" }
+}

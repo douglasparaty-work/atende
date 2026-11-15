@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    body { background: transparent; }
+    .w { height: 100vh; display: flex; flex-direction: column; background: var(--panel); }
+    .w header { background: var(--brand); color: #fff; padding: 14px 16px; }
+    .w header small { opacity: .85; }
+    .w .msgs { background: #f4f5f8; }
+    .w .msg.in { align-self: flex-end; background: var(--me); border-color: #c9e9da; }
+    .w .msg.agent { align-self: flex-start; }
+    .w form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+    .w .start { padding: 20px; }
+  </style>
+</head>
+<body>
+  <div class="w">
+    <header><b id="org">Atendimento</b><br><small>Normalmente respondemos em poucos minutos</small></header>
+    <div id="body" class="grow" style="display:flex;flex-direction:column;min-height:0"></div>
+  </div>
+  <script type="module">
+    const $ = (s) => document.querySelector(s);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const ch = new URLSearchParams(location.search).get('c') || '1';
+    const key = 'atende_widget_' + ch;
+    const store = { get: () => { try { return localStorage.getItem(key); } catch { return null; } }, set: (v) => { try { localStorage.setItem(key, v); } catch { } } };
+    let token = store.get();
+    const post = async (url, body) => { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; };
+
+    fetch(`/widget/${ch}/info`).then(r => r.json()).then(i => { if (i.org_name) $('#org').textContent = i.org_name; if (i.error) $('#body').innerHTML = `<p class="start">${esc(i.error)}</p>`; });
+
+    function startForm() {
+      $('#body').innerHTML = `<form class="start" id="sf" style="display:block"><h2>Olá! 👋</h2><p class="muted">Conte quem é você para começarmos.</p>
+        <label class="f"><span>Nome *</span><input id="n" required></label><label class="f"><span>Telefone</span><input id="p" placeholder="+55 11 99999-0000"></label>
+        <label class="f"><span>E-mail</span><input id="e" type="email"></label><button class="btn primary" style="width:100%">Iniciar conversa</button><p class="small muted" id="err"></p></form>`;
+      $('#sf').onsubmit = async (ev) => {
+        ev.preventDefault();
+        try { token = (await post(`/widget/${ch}/session`, { name: $('#n').value, phone: $('#p').value.replace(/[^\d+]/g, '') || undefined, email: $('#e').value || undefined })).token; store.set(token); chat(); }
+        catch (e) { $('#err').textContent = e.message; }
+      };
+    }
+    const bubble = (m) => `<div class="msg ${m.source === 'Contact' ? 'in' : 'agent'} ${m.state === 'Deleted' ? 'deleted' : ''}" data-mid="${m.id}">${esc(m.text)}<div class="meta">${new Date(m.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div></div>`;
+    async function chat() {
+      const r = await fetch(`/widget/history?t=${token}`);
+      if (r.status === 401) { token = null; return startForm(); }
+      const hist = await r.json();
+      $('#body').innerHTML = `<div class="msgs" id="msgs" style="flex:1">${hist.map(bubble).join('')}</div><form id="mf"><input id="t" placeholder="Escreva sua mensagem" autocomplete="off" aria-label="Mensagem"><button class="btn primary">Enviar</button></form>`;
+      const box = $('#msgs'); box.scrollTop = box.scrollHeight;
+      $('#mf').onsubmit = async (ev) => { ev.preventDefault(); const t = $('#t').value.trim(); if (!t) return; $('#t').value = ''; try { await post(`/widget/messages?t=${token}`, { text: t }); } catch (e) { alert(e.message); } };
+      const es = new EventSource(`/widget/events?t=${token}`);
+      es.addEventListener('message', (e) => {
+        const m = JSON.parse(e.data); const old = box.querySelector(`[data-mid="${m.id}"]`);
+        if (old) old.outerHTML = bubble(m); else { box.insertAdjacentHTML('beforeend', bubble(m)); box.scrollTop = box.scrollHeight; }
+      });
+      $('#t').focus();
+    }
+    token ? chat() : startForm();
+  </script>
+</body>
+</html>

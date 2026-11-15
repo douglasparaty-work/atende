@@ -5,7 +5,8 @@ Plataforma de atendimento multicanal. É uma reconstrução funcional, independe
 ## Rodar
 
 ```bash
-cd atende && npm install && npm start
+git clone https://github.com/douglasparaty-work/atende.git && cd atende
+npm install && npm start
 ```
 
 Abra http://localhost:3900. No primeiro acesso você cria a conta do proprietário. Requer Node ≥ 22.13: usa `node:sqlite` e nenhum build.

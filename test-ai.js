@@ -9,6 +9,8 @@ const calls = [];
 const mock = http.createServer((req, res) => {
   let s = ''; req.on('data', c => s += c); req.on('end', () => {
     const body = JSON.parse(s); calls.push({ url: req.url, auth: req.headers.authorization, body });
+    if (body.model === 'hang-model') return; // never answers
+    if (body.model === 'bad-model') return res.writeHead(503, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'high demand' } }));
     if (req.url.startsWith('/fail')) return res.writeHead(429, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'quota exceeded' } }));
     const last = body.messages.at(-1).content;
     const content = /humano/.test(last) ? '[TRANSFERIR]' : 'Entregamos em até 7 dias úteis.';
@@ -53,7 +55,16 @@ try {
   assert.deepEqual(calls.map(c => c.url), ['/v1/chat/completions'], 'cooling provider skipped');
   // every provider failing -> clear 502 instead of a generic error
   process.env.AI_PROVIDERS = 'groq';
-  await assert.rejects(api('POST', '/api/v1/ai/improve', { text: 'oi' }), /IA indisponível: groq: quota exceeded/);
+  await assert.rejects(api('POST', '/api/v1/ai/improve', { text: 'oi' }), /IA indisponível: groq\/g-model: quota exceeded/);
+  // model list inside one provider: first model fails, second answers
+  process.env.AI_PROVIDERS = 'custom'; process.env.AI_MODEL = 'bad-model,mock-model'; calls.length = 0;
+  mock.badModel = true;
+  assert.equal((await api('POST', '/api/v1/ai/improve', { text: 'oi' })).text, 'Entregamos em até 7 dias úteis.');
+  assert.deepEqual(calls.map(c => c.body.model), ['bad-model', 'mock-model']);
+  // a model that hangs (timeout) must not block the next model
+  process.env.AI_MODEL = 'hang-model,mock-model'; process.env.AI_TIMEOUT_MS = '300'; calls.length = 0;
+  assert.equal((await api('POST', '/api/v1/ai/improve', { text: 'oi' })).text, 'Entregamos em até 7 dias úteis.');
+  assert.deepEqual(calls.map(c => c.body.model), ['hang-model', 'mock-model']);
   console.log('OK — AI provider checks passed');
 } finally {
   server.close(); mock.close(); db.close();

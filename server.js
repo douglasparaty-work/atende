@@ -262,7 +262,7 @@ async function runBot(chatId) {
 // Per provider: <NAME>_API_KEY, <NAME>_MODEL, <NAME>_BASE_URL. Default models can go stale: override <NAME>_MODEL.
 const AI_PRESETS = {
   anthropic: { key: 'ANTHROPIC_API_KEY', model: 'claude-opus-5-5' },
-  gemini: { url: 'https://generativelanguage.googleapis.com/v1beta/openai', key: 'GEMINI_API_KEY', model: 'gemini-2.5-flash' },
+  gemini: { url: 'https://generativelanguage.googleapis.com/v1beta/openai', key: 'GEMINI_API_KEY', model: 'gemini-flash-latest,gemini-flash-lite-latest,gemini-3.5-flash' },
   groq: { url: 'https://api.groq.com/openai/v1', key: 'GROQ_API_KEY', model: 'llama-3.3-70b-versatile' },
   openrouter: { url: 'https://openrouter.ai/api/v1', key: 'OPENROUTER_API_KEY', model: 'meta-llama/llama-3.3-70b-instruct:free' },
   nvidia: { url: 'https://integrate.api.nvidia.com/v1', key: 'NVIDIA_API_KEY', model: 'meta/llama-3.3-70b-instruct' },
@@ -281,14 +281,23 @@ async function callOpenAI(n, system, messages, max_tokens, single) {
   const p = AI_PRESETS[n];
   const url = (penv(n, 'BASE_URL') || (n === 'custom' ? process.env.AI_BASE_URL : p.url) || '').replace(/\/$/, '') + '/chat/completions';
   const key = (p.key && process.env[p.key]) || (single && process.env.AI_API_KEY);
-  const r = await fetch(url, {
-    method: 'POST', signal: AbortSignal.timeout(60000),
-    headers: { 'content-type': 'application/json', ...(key && { authorization: 'Bearer ' + key }) },
-    body: JSON.stringify({ model: penv(n, 'MODEL') || ((single || n === 'custom') && process.env.AI_MODEL) || p.model, max_tokens, messages: [{ role: 'system', content: system }, ...messages] }),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(`${n}: ${j.error?.message || j[0]?.error?.message || 'HTTP ' + r.status}`), { status: r.status });
-  return String(j.choices?.[0]?.message?.content || '').trim() || null;
+  // A model list (comma separated) is tried in order: a busy or retired model falls back to the next one.
+  const models = String(penv(n, 'MODEL') || ((single || n === 'custom') && process.env.AI_MODEL) || p.model).split(',').map(s => s.trim()).filter(Boolean);
+  let err;
+  for (const model of models) {
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'POST', signal: AbortSignal.timeout(Number(process.env.AI_TIMEOUT_MS) || 25000), // a hung model must not block the next one
+        headers: { 'content-type': 'application/json', ...(key && { authorization: 'Bearer ' + key }) },
+        body: JSON.stringify({ model, max_tokens, messages: [{ role: 'system', content: system }, ...messages] }),
+      });
+    } catch (e) { err = new Error(`${n}/${model}: ${e.name === 'TimeoutError' ? 'sem resposta em 25 s' : e.message}`); continue; }
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) { const out = String(j.choices?.[0]?.message?.content || '').trim(); if (out) return out; err = new Error(`${n}/${model}: resposta vazia`); continue; }
+    err = Object.assign(new Error(`${n}/${model}: ${j.error?.message || j[0]?.error?.message || 'HTTP ' + r.status}`), { status: r.status });
+  }
+  throw err;
 }
 let anthropic = null;
 async function callAnthropic(n, system, messages, max_tokens, single) {

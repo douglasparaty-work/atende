@@ -19,7 +19,7 @@ IA (agentes, melhorar texto, sugestões e resumo) aceita vários provedores **co
 | Provedor | Chave | Modelo padrão (troque com `<NOME>_MODEL`) |
 |---|---|---|
 | Claude (pago) | `ANTHROPIC_API_KEY` | `claude-opus-5-5` |
-| Google Gemini (grátis com limites) | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| Google Gemini (grátis com limites) | `GEMINI_API_KEY` | `gemini-flash-latest,gemini-flash-lite-latest,gemini-3.5-flash` |
 | Groq (grátis com limites) | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
 | OpenRouter (modelos `:free`) | `OPENROUTER_API_KEY` | `meta-llama/llama-3.3-70b-instruct:free` |
 | NVIDIA Build (créditos grátis) | `NVIDIA_API_KEY` | `meta/llama-3.3-70b-instruct` |
@@ -35,7 +35,7 @@ Exemplo:
 GEMINI_API_KEY=... GROQ_API_KEY=... OPENROUTER_API_KEY=... npm start
 ```
 
-Sem nenhuma chave, o resto funciona e as conversas com agente de IA vão para a fila. Se todos os provedores falharem, a conversa também vai para um atendente. Os modelos padrão podem sair de linha: se der erro de modelo, defina `<NOME>_MODEL` (ex.: `GEMINI_MODEL`).
+Sem nenhuma chave, o resto funciona e as conversas com agente de IA vão para a fila. Se todos os provedores falharem, a conversa também vai para um atendente. Os modelos padrão podem sair de linha: se der erro de modelo, defina `<NOME>_MODEL` (ex.: `GEMINI_MODEL`); aceita uma lista separada por vírgula, tentada em ordem.
 
 Teste ponta a ponta: `npm test`.
 

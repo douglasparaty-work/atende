@@ -66,6 +66,16 @@ try {
   await api('POST', `/api/v1/chats/${chatId}/messages`, { text: 'nota interna', note: true }); await sleep(50);
   assert.deepEqual(fakes[0].sent, [['123456@lid', 'Olá Ana']]);
 
+  // content-less envelope (stub 2): attendant is warned once, and the real message still lands when the phone resends it
+  const stub = { key: { id: 'S1', remoteJid: '777@lid', remoteJidAlt: '5541900002222@s.whatsapp.net' }, messageStubType: 2, messageStubParameters: ['Message absent from node'], pushName: 'Caio' };
+  fakes[0].ev.emit('messages.upsert', { type: 'notify', messages: [stub] }); fakes[0].ev.emit('messages.upsert', { type: 'notify', messages: [stub] }); await sleep(100);
+  const caio = (await api('GET', '/api/v1/chats?tab=waiting')).find(c => c.contact_name === 'Caio');
+  let caioChat = await api('GET', '/api/v1/chats/' + caio.id);
+  assert.deepEqual(caioChat.messages.map(m => [m.note, /ainda não entregou/.test(m.text)]), [[1, true]], 'one warning note');
+  upsert(fakes[0], 'S1', { remoteJid: '777@lid', remoteJidAlt: '5541900002222@s.whatsapp.net' }, { conversation: 'cheguei' }, { pushName: 'Caio' }); await sleep(100);
+  caioChat = await api('GET', '/api/v1/chats/' + caio.id);
+  assert.equal(caioChat.messages.at(-1).text, 'cheguei');
+
   // chatbot on the channel answers a new contact over WhatsApp
   const bot = await api('POST', '/api/v1/bots', { name: 'Boas-vindas', active: 1, steps: [{ id: 's1', type: 'message', text: 'Bem-vindo, {{contact.name}}!' }] });
   await api('PUT', `/api/v1/channels/${ch.id}`, { bot_id: bot.id });

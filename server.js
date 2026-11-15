@@ -183,6 +183,11 @@ const wa = createWhatsApp({
     let c = q1('SELECT c.* FROM contacts c JOIN wa_jids w ON w.contact_id=c.id WHERE w.jid=?', jid) || (phone && q1('SELECT * FROM contacts WHERE phone=?', phone));
     if (!c) c = findOrCreateContact({ phone, name: name || phone || 'WhatsApp ' + jid.split('@')[0] });
     run('INSERT OR REPLACE INTO wa_jids(contact_id,jid) VALUES(?,?)', c.id, jid); // replies must go to the same id the contact wrote from
+    if (text == null) { // WhatsApp delivered the envelope without the content
+      const { chat } = openChatFor(c.id, channelId, { byContact: true });
+      addMessage(chat.id, { source: 'Bot', note: 1, text: '⚠ Este contato enviou uma mensagem que o WhatsApp ainda não entregou. Ela pode aparecer em instantes; se não aparecer, peça para o cliente enviar de novo.' });
+      return;
+    }
     await inbound({ channel_id: channelId, contact_id: c.id, text });
   },
 });

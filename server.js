@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS tokens(id INTEGER PRIMARY KEY, member_id, name, token
 CREATE TABLE IF NOT EXISTS webhook_logs(id INTEGER PRIMARY KEY, webhook_id, event, status, created_at TEXT DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS widget_sessions(token TEXT PRIMARY KEY, contact_id, channel_id);
+CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, member_id INTEGER, created_at TEXT DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS wa_jids(contact_id INTEGER PRIMARY KEY REFERENCES contacts(id) ON DELETE CASCADE, jid TEXT UNIQUE);
 `);
 const q = (sql, ...p) => db.prepare(sql).all(...p);
@@ -467,16 +468,17 @@ async function readBody(req) {
   if (!s) return {};
   try { return JSON.parse(s); } catch { throw new HttpError(400, 'JSON inválido'); }
 }
+const tokenOf = (req, u) => { const h = req.headers.authorization || ''; return h.startsWith('Bearer ') ? h.slice(7) : u.searchParams.get('token') || (req.headers.cookie || '').match(/sid=([w-]+)/)?.[1]; };
 function auth(req, u) {
-  const h = req.headers.authorization || '';
-  const tok = h.startsWith('Bearer ') ? h.slice(7) : u.searchParams.get('token') || (req.headers.cookie || '').match(/sid=([\w-]+)/)?.[1];
+  const tok = tokenOf(req, u);
   if (!tok) return null;
-  let m = q1('SELECT * FROM members WHERE session=?', sha(tok));
+  // one session row per device, so the phone and the computer stay logged in together; sessions last 30 days
+  let m = q1("SELECT m.* FROM sessions s JOIN members m ON m.id=s.member_id WHERE s.token_hash=? AND s.created_at > datetime('now','-30 days')", sha(tok));
   if (!m) { const t = q1('SELECT member_id FROM tokens WHERE token_hash=?', sha(tok)); if (t) m = q1('SELECT * FROM members WHERE id=?', t.member_id); }
   return m && truthy(m.active) ? decode('members', m) : null;
 }
 const can = (me, role) => ROLES.indexOf(me.role) >= ROLES.indexOf(role);
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json' };
+const MIME = { '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
 const routes = []; // [method, regex, handler, {public}]
 const on = (method, pattern, handler, opts = {}) => routes.push([method, new RegExp('^' + pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)') + '/?$'), handler, opts]);
@@ -490,21 +492,33 @@ on('POST', '/api/v1/setup', ({ b }) => {
   if (b.org_name) run("INSERT OR REPLACE INTO settings VALUES('org',?)", JSON.stringify({ ...getSettings(), org_name: b.org_name }));
   return { ok: true };
 }, { public: true });
-on('POST', '/api/v1/auth/login', ({ b, res }) => {
-  const m = q1('SELECT * FROM members WHERE email=?', String(b.email || '').toLowerCase());
-  must(m && checkPw(String(b.password || ''), m.password_hash) && truthy(m.active), 401, 'E-mail ou senha inválidos');
+// Brute-force guard for a public deployment: 8 failures per address+e-mail, 40 per e-mail, within 15 minutes.
+// shortcut: in-memory and keyed on proxy headers a direct client could forge; per-e-mail cap still holds. Use a real rate limiter at scale.
+const loginFails = new Map();
+const failKey = (k) => { const f = loginFails.get(k); return f && f.until > Date.now() ? f : (loginFails.delete(k), null); };
+const clientIp = (req) => String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+on('POST', '/api/v1/auth/login', ({ b, req, res }) => {
+  const email = String(b.email || '').toLowerCase(), k1 = `${clientIp(req)}|${email}`, k2 = `|${email}`;
+  must((failKey(k1)?.n || 0) < 8 && (failKey(k2)?.n || 0) < 40, 429, 'Muitas tentativas. Aguarde 15 minutos e tente de novo.');
+  const m = q1('SELECT * FROM members WHERE email=?', email);
+  if (!(m && checkPw(String(b.password || ''), m.password_hash) && truthy(m.active))) {
+    for (const k of [k1, k2]) loginFails.set(k, { n: (failKey(k)?.n || 0) + 1, until: Date.now() + 15 * 60000 });
+    throw new HttpError(401, 'E-mail ou senha inválidos');
+  }
+  loginFails.delete(k1);
   const tok = crypto.randomUUID();
-  run('UPDATE members SET session=? WHERE id=?', sha(tok), m.id);
-  res.setHeader('set-cookie', `sid=${tok}; HttpOnly; SameSite=Lax; Path=/`);
+  run("DELETE FROM sessions WHERE created_at <= datetime('now','-30 days')");
+  run('INSERT INTO sessions(token_hash,member_id) VALUES(?,?)', sha(tok), m.id);
+  res.setHeader('set-cookie', `sid=${tok}; HttpOnly; SameSite=Lax; Max-Age=2592000; Path=/${req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : ''}`);
   logAct(m.id, 'Login', m.email);
   return { token: tok, member: decode('members', m) };
 }, { public: true });
-on('POST', '/api/v1/auth/logout', ({ me, res }) => { run('UPDATE members SET session=NULL WHERE id=?', me.id); res.setHeader('set-cookie', 'sid=; Max-Age=0; Path=/'); return { ok: true }; });
+on('POST', '/api/v1/auth/logout', ({ req, u, res }) => { run('DELETE FROM sessions WHERE token_hash=?', sha(tokenOf(req, u) || '')); res.setHeader('set-cookie', 'sid=; Max-Age=0; Path=/'); return { ok: true }; });
 on('GET', '/api/v1/me', ({ me }) => ({ ...me, settings: getSettings(), ai: aiAvailable() }));
-on('PUT', '/api/v1/me', ({ me, b }) => {
+on('PUT', '/api/v1/me', ({ me, b, req, u }) => {
   for (const f of ['name', 'phone', 'closing_message']) if (f in b) run(`UPDATE members SET ${f}=? WHERE id=?`, b[f], me.id);
   if ('prefs' in b) run('UPDATE members SET prefs=? WHERE id=?', JSON.stringify(b.prefs), me.id);
-  if (b.password) { must(String(b.password).length >= 6, 400, 'Senha precisa de 6+ caracteres'); run('UPDATE members SET password_hash=? WHERE id=?', hash(b.password), me.id); }
+  if (b.password) { must(String(b.password).length >= 6, 400, 'Senha precisa de 6+ caracteres'); run('UPDATE members SET password_hash=? WHERE id=?', hash(b.password), me.id); run('DELETE FROM sessions WHERE member_id=? AND token_hash<>?', me.id, sha(tokenOf(req, u) || '')); } // a new password signs out the other devices
   return decode('members', q1('SELECT * FROM members WHERE id=?', me.id));
 });
 on('GET', '/api/v1/tokens', ({ me }) => q('SELECT id,name,created_at FROM tokens WHERE member_id=?', me.id));
@@ -692,14 +706,14 @@ for (const [t, d] of Object.entries(R)) {
     logAct(me.id, d.log + 'Created', b.name || b.shortcut || b.text || id);
     return decode(t, q1(`SELECT * FROM ${t} WHERE id=?`, id));
   });
-  on('PUT', `/api/v1/${t}/:id`, ({ me, p, b }) => {
+  on('PUT', `/api/v1/${t}/:id`, ({ me, p, b, req, u }) => {
     must(can(me, d.role), 403, 'Sem permissão');
     must(q1(`SELECT id FROM ${t} WHERE id=?`, p.id), 404, 'Não encontrado');
     if (t === 'members') { const target = q1('SELECT role FROM members WHERE id=?', p.id); must((target.role !== 'Owner' && b.role !== 'Owner') || me.role === 'Owner', 403, 'Sem permissão'); if (b.email) b.email = String(b.email).toLowerCase(); }
     if (t === 'campaigns') delete b.status;
     const f = d.fields.filter(k => k in b);
     if (f.length) run(`UPDATE ${t} SET ${f.map(k => k + '=?').join(',')} WHERE id=?`, ...f.map(k => encode(t, k, b[k])), p.id);
-    if (t === 'members' && b.password) { must(String(b.password).length >= 6, 400, 'Senha precisa de 6+ caracteres'); run('UPDATE members SET password_hash=? WHERE id=?', hash(b.password), p.id); }
+    if (t === 'members' && b.password) { must(String(b.password).length >= 6, 400, 'Senha precisa de 6+ caracteres'); run('UPDATE members SET password_hash=? WHERE id=?', hash(b.password), p.id); run('DELETE FROM sessions WHERE member_id=? AND token_hash<>?', p.id, sha(tokenOf(req, u) || '')); }
     logAct(me.id, d.log + 'Updated', b.name || p.id);
     return decode(t, q1(`SELECT * FROM ${t} WHERE id=?`, p.id));
   });

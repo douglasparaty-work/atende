@@ -635,4 +635,5 @@ async function boot() {
   try { ME = await api('GET', '/api/v1/me'); } catch { store.set('tk', null); return authScreen(); }
   await refreshLookups(); connectEvents(); route(); updateBadge();
 }
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => { /* needs https or localhost */ });
 boot();

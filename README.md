@@ -57,6 +57,18 @@ Teste ponta a ponta: `npm test`.
 - **Webhooks**: filtro de eventos, assinatura HMAC (`X-Signature`), log de entregas.
 - **API pública** com token pessoal. Rotas documentadas em Configurações › API.
 
+## Instalar no celular (app)
+
+O Atende é um app instalável (PWA): abre em tela cheia, com ícone próprio, e carrega a tela mesmo sem sinal. O celular só instala por **HTTPS**, então o servidor precisa de um endereço público:
+
+1. No computador onde o Atende roda: `npm start` e, em outro terminal, o túnel grátis da Cloudflare: `cloudflared tunnel --url http://localhost:3900`. Ele mostra um endereço `https://….trycloudflare.com`.
+2. No celular, abra esse endereço e entre com o seu e-mail e senha.
+3. Android (Chrome): menu ⋮ › **Instalar app**. iPhone (Safari): compartilhar › **Adicionar à Tela de Início**.
+
+O endereço do túnel grátis **muda a cada vez que o túnel reinicia** (aí é preciso instalar de novo) e o computador precisa ficar ligado. Para um endereço fixo, use um túnel nomeado da Cloudflare com domínio próprio ou um servidor sempre ligado (VPS). O login bloqueia 15 minutos após 8 tentativas erradas, e cada aparelho tem a sua sessão (30 dias). Defina uma senha forte antes de expor o app.
+
+Ainda não há notificação push no celular: as notificações só funcionam com o app aberto.
+
 ## Conectar o seu WhatsApp
 
 1. Entre no app › **Configurações › Canais de atendimento › Novo canal**, tipo **WhatsApp (QR code)**.

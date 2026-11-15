@@ -106,6 +106,28 @@ try {
   const c2 = (await api('GET', '/api/v1/chats?tab=waiting'))[0]; // campaign reopened a chat in the queue
   await api('POST', `/api/v1/chats/${c2.id}/ai-agent`, { agent_id: agent.id });
   assert.equal((await api('GET', `/api/v1/chats/${c2.id}`)).ai_agent_id, null);
+  // installable app assets are served with the right types
+  const mf = await (await fetch(base + '/manifest.webmanifest')).json();
+  assert.equal(mf.display, 'standalone'); assert.ok(mf.icons.some(i => i.purpose === 'maskable'));
+  for (const i of mf.icons) { const r = await fetch(base + i.src); assert.equal(r.headers.get('content-type'), 'image/png'); assert.ok((await r.arrayBuffer()).byteLength > 500); }
+  assert.match(await (await fetch(base + '/sw.js')).text(), /caches.open/);
+
+  // brute force guard: 8 wrong passwords lock that e-mail from this address (even with the right password); others are unaffected
+  token = '';
+  for (let i = 0; i < 8; i++) await assert.rejects(api('POST', '/api/v1/auth/login', { email: 'dona@x.com', password: 'bad' + i }), /inválidos/);
+  await assert.rejects(api('POST', '/api/v1/auth/login', { email: 'dona@x.com', password: 'secret1' }), /Muitas tentativas/);
+  assert.ok((await api('POST', '/api/v1/auth/login', { email: 'op@x.com', password: 'secret2' })).token);
+  // several devices at once: a second login must not sign out the first; logout ends only its own session
+  const login = async (email, password) => (await api('POST', '/api/v1/auth/login', { email, password })).token;
+  const as = async (tk, m, u, b) => { const prev = token; token = tk; try { return await api(m, u, b); } finally { token = prev; } };
+  const phone = await login('op@x.com', 'secret2'), laptop = await login('op@x.com', 'secret2');
+  assert.equal((await as(phone, 'GET', '/api/v1/me')).email, 'op@x.com'); assert.equal((await as(laptop, 'GET', '/api/v1/me')).email, 'op@x.com');
+  await as(phone, 'POST', '/api/v1/auth/logout', {});
+  await assert.rejects(as(phone, 'GET', '/api/v1/me'), /autenticado/); assert.equal((await as(laptop, 'GET', '/api/v1/me')).email, 'op@x.com');
+  // a new password signs out the other devices but keeps the current one
+  const other = await login('op@x.com', 'secret2');
+  await as(laptop, 'PUT', '/api/v1/me', { password: 'secret3' });
+  await assert.rejects(as(other, 'GET', '/api/v1/me'), /autenticado/); assert.equal((await as(laptop, 'GET', '/api/v1/me')).email, 'op@x.com');
   console.log('OK — all checks passed');
 } finally {
   server.close(); hookSrv.close(); db.close();

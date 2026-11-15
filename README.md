@@ -1,6 +1,6 @@
 # Atende
 
-Plataforma de atendimento multicanal. É uma reconstrução funcional do Umbler Talk, mapeado em 2026-11-12. A evidência da engenharia reversa está em observação das telas e da API pública do Umbler Talk (35 telas, ~300 endpoints).
+Plataforma de atendimento multicanal. É uma reconstrução funcional, independente, inspirada no Umbler Talk: foram observadas as telas e a API pública dele (35 telas, ~300 endpoints), sem copiar código.
 
 ## Rodar
 

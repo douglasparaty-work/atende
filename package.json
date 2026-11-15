@@ -4,7 +4,16 @@
   "private": true,
   "type": "module",
   "description": "Plataforma de atendimento multicanal (reconstrução funcional do Umbler Talk)",
-  "scripts": { "start": "node server.js", "test": "node test.js && node test-ai.js" },
-  "engines": { "node": ">=22.13" },
-  "dependencies": { "@anthropic-ai/sdk": "^1.8.0" }
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js && node test-ai.js && node test-wa.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "qrcode": "^1.5.4"
+  }
 }

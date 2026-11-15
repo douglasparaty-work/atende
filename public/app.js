@@ -182,10 +182,10 @@ const RES = {
   sectors: { title: 'Setores', desc: 'Sub-divisões da sua organização (ex: Vendas, Suporte). Conversas novas entram no setor padrão.', add: 'Novo setor', lookup: 'sectors', cols: [['name', 'Nome'], ['is_default', 'Padrão', v => v && v !== '0' ? '<span class="chip">Setor padrão</span>' : '', true], ['id', 'Atendentes', id => L.members.filter(m => (m.sector_ids || []).map(String).includes(String(id))).map(m => esc(m.name)).join(', '), true]], fields: [{ k: 'name', label: 'Nome', required: true }, { k: 'is_default', label: 'Padrão', type: 'check', text: 'Setor padrão para novas conversas' }] },
   channels: {
     title: 'Canais de atendimento', desc: 'Canais por onde seus contatos falam com você. O canal Widget gera um chat para o seu site; o canal API recebe mensagens de qualquer provedor (WhatsApp, Instagram...) via POST /api/v1/inbound.', add: 'Novo canal', lookup: 'channels',
-    cols: [['name', 'Nome'], ['type', 'Tipo'], ['bot_id', 'Chatbot inicial', v => esc(nameOf('bots', v)) || '<span class="muted">—</span>', true], ['active', 'Ativo', yes], ['id', 'Testar', (id, r) => r.type === 'Widget' ? `<a href="/widget.html?c=${id}" target="_blank" rel="noopener">Abrir widget ↗</a>` : '', true]],
-    fields: [{ k: 'name', label: 'Nome', required: true }, { k: 'type', label: 'Tipo', type: 'select', empty: false, options: [['Widget', 'Widget de site'], ['API', 'API / WhatsApp via provedor']] },
+    cols: [['name', 'Nome'], ['type', 'Tipo'], ['bot_id', 'Chatbot inicial', v => esc(nameOf('bots', v)) || '<span class="muted">—</span>', true], ['active', 'Ativo', yes], ['id', 'Testar', (id, r) => r.type === 'Widget' ? `<a href="/widget.html?c=${id}" target="_blank" rel="noopener">Abrir widget ↗</a>` : r.type === 'WhatsApp' ? `<button class="btn sm" data-wa="${id}">Conectar WhatsApp</button>` : '', true]],
+    fields: [{ k: 'name', label: 'Nome', required: true }, { k: 'type', label: 'Tipo', type: 'select', empty: false, options: [['Widget', 'Widget de site'], ['WhatsApp', 'WhatsApp (QR code)'], ['API', 'API / provedor externo']] },
       { k: 'bot_id', label: 'Chatbot iniciado em novas conversas', type: 'select', empty: 'Nenhum', options: () => opts(L.bots) }, { k: 'active', label: 'Status', type: 'check', text: 'Ativo', default: 1 }],
-    note: () => `<div class="card" style="margin-bottom:12px"><b>Instalar o widget no seu site</b><pre>&lt;iframe src="${location.origin}/widget.html?c=ID_DO_CANAL" style="position:fixed;bottom:16px;right:16px;width:360px;height:540px;border:0;border-radius:14px;box-shadow:0 8px 30px #0003"&gt;&lt;/iframe&gt;</pre></div>`,
+    note: () => `<div class="card" style="margin-bottom:12px;border-color:#f0e2a8;background:var(--note)"><b>WhatsApp por QR code</b> usa a conexão não oficial do WhatsApp Web: há risco de o número ser banido, principalmente com envio em massa. Teste primeiro com um chip secundário. Depois de criar o canal, clique em <b>Conectar WhatsApp</b>.</div><div class="card" style="margin-bottom:12px"><b>Instalar o widget no seu site</b><pre>&lt;iframe src="${location.origin}/widget.html?c=ID_DO_CANAL" style="position:fixed;bottom:16px;right:16px;width:360px;height:540px;border:0;border-radius:14px;box-shadow:0 8px 30px #0003"&gt;&lt;/iframe&gt;</pre></div>`,
   },
   tags: { title: 'Etiquetas', desc: 'Classifique conversas e contatos. Use etiquetas para filtrar e segmentar campanhas.', add: 'Nova etiqueta', lookup: 'tags', cols: [['name', 'Nome', (v, r) => `<span class="chip" style="background:${esc(r.color || '#eef0f4')}22;color:${esc(r.color || 'inherit')}">● ${esc(v)}</span>`, true]], fields: [{ k: 'name', label: 'Nome', required: true }, { k: 'color', label: 'Cor', type: 'color', default: '#0f9d76' }] },
   quick_answers: { title: 'Respostas rápidas', desc: 'Mensagens prontas. No chat, digite "/" para buscar.', add: 'Nova resposta rápida', lookup: 'quick_answers', cols: [['shortcut', 'Atalho', v => '/' + esc(v), true], ['text', 'Mensagem']], fields: [{ k: 'shortcut', label: 'Atalho (sem /)', required: true }, { k: 'text', label: 'Mensagem', type: 'textarea', required: true, help: 'Variáveis: {{contact.name}}' }] },
@@ -243,6 +243,28 @@ async function pageCrud(main, key, wrapper) {
     if (r) { toast(`${r.imported} contato(s) importado(s)`); reload(); }
   });
   if (d.after) await d.after($('.page', el));
+}
+
+// ---------- WhatsApp connection modal ----------
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-wa]'); if (b) openWaModal(b.dataset.wa); });
+function openWaModal(id) {
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = '<div class="modal" role="dialog" aria-modal="true"><h2>Conectar WhatsApp</h2><div id="waBody">Carregando…</div><div class="actions"><button class="btn danger hidden" id="waOut">Desconectar</button><button class="btn" id="waClose">Fechar</button></div></div>';
+  document.body.append(bg);
+  let timer, last; const close = () => { clearInterval(timer); bg.remove(); };
+  $('#waClose', bg).onclick = close; bg.addEventListener('mousedown', (e) => { if (e.target === bg) close(); });
+  const draw = guard(async () => {
+    const s = await api('GET', `/api/v1/channels/${id}/whatsapp`);
+    const key = JSON.stringify(s); if (key === last) return; last = key; // redraw only on change: avoids QR flicker
+    const body = $('#waBody', bg); if (!body) return;
+    $('#waOut', bg).classList.toggle('hidden', s.state === 'disconnected');
+    if (s.state === 'connected') body.innerHTML = `<p><b>✅ Conectado</b>${s.phone ? ' como +' + esc(s.phone) : ''}.</p><p class="small muted">As mensagens recebidas neste número aparecem em Conversas.</p>`;
+    else if (s.state === 'qr') body.innerHTML = `<p>No celular: <b>WhatsApp › Aparelhos conectados › Conectar um aparelho</b> e leia o código.</p><img alt="QR code do WhatsApp" src="${s.qr}" style="display:block;margin:auto;width:280px;height:280px"><p class="small muted">O código é renovado sozinho a cada ~1 minuto.</p>`;
+    else if (s.state === 'connecting') body.innerHTML = '<p>Conectando…</p>';
+    else { body.innerHTML = '<p>Desconectado.</p><button class="btn primary" id="waGo">Gerar QR code</button>'; $('#waGo', bg).onclick = guard(async () => { await api('POST', `/api/v1/channels/${id}/whatsapp/connect`, {}); last = null; draw(); }); }
+  });
+  $('#waOut', bg).onclick = guard(async () => { if (await confirmBox('Desconectar o WhatsApp deste canal?')) { await api('POST', `/api/v1/channels/${id}/whatsapp/logout`, {}); last = null; draw(); } });
+  draw(); timer = setInterval(draw, 2000);
 }
 
 // ---------- chats ----------
@@ -334,7 +356,7 @@ function msgHtml(m) {
   const cls = m.note ? 'note' : m.source === 'Contact' ? 'in' : m.source === 'Bot' ? 'bot' : 'out';
   const who = m.note ? `📝 Nota${m.member_name ? ' de ' + m.member_name : ''}` : m.source === 'Bot' ? 'Bot' : m.source === 'Member' ? m.member_name || '' : '';
   const del = m.source === 'Member' && m.state !== 'Deleted' && (m.member_id === ME.id || can('Admin')) ? `<button class="btn ghost sm" data-delmsg="${m.id}" title="Apagar" style="padding:0">🗑</button>` : '';
-  return `<div class="msg ${cls} ${m.state === 'Deleted' ? 'deleted' : ''}" data-mid="${m.id}">${esc(m.text)}<div class="meta">${who ? `<span>${esc(who)}</span>` : ''}<span>${fmtTime(m.created_at)}</span>${del}</div></div>`;
+  return `<div class="msg ${cls} ${m.state === 'Deleted' ? 'deleted' : ''}" data-mid="${m.id}">${esc(m.text)}<div class="meta">${who ? `<span>${esc(who)}</span>` : ''}<span>${fmtTime(m.created_at)}</span>${m.state === 'Failed' ? '<span style="color:var(--danger)">⚠ não enviada</span>' : ''}${del}</div></div>`;
 }
 function appendMessage(m) {
   const box = $('#msgs'); if (!box) return;

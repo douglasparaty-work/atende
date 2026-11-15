@@ -2,3 +2,4 @@ node_modules/
 atende.db*
 DEV_LOGIN.txt
 .env
+wa-auth/

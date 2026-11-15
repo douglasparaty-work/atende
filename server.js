@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { createWhatsApp } from './whatsapp.js';
 
 const PORT = Number(process.env.PORT || 3900);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS tokens(id INTEGER PRIMARY KEY, member_id, name, token
 CREATE TABLE IF NOT EXISTS webhook_logs(id INTEGER PRIMARY KEY, webhook_id, event, status, created_at TEXT DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS widget_sessions(token TEXT PRIMARY KEY, contact_id, channel_id);
+CREATE TABLE IF NOT EXISTS wa_jids(contact_id INTEGER PRIMARY KEY REFERENCES contacts(id) ON DELETE CASCADE, jid TEXT UNIQUE);
 `);
 const q = (sql, ...p) => db.prepare(sql).all(...p);
 const q1 = (sql, ...p) => db.prepare(sql).get(...p);
@@ -124,6 +126,7 @@ function addMessage(chatId, { source, member_id = null, text, note = 0, type = '
   emit('message', msg, { chatId });
   emit('chat', chatFull(chatId));
   if (!note) fire('Message', { chat: chatFull(chatId), message: msg });
+  if (!note && source !== 'Contact') deliverWhatsApp(chat, msg);
   return msg;
 }
 function updateChat(id, fields, { by = null, event, activity } = {}) {
@@ -169,6 +172,28 @@ async function inbound({ channel_id, phone, name, email, text, contact_id }) {
   else if (chat.bot) await continueBot(chat.id, text);
   else if (chat.ai_agent_id) await aiReply(chat.id);
   return { chat_id: chat.id, message: msg };
+}
+
+// ---------- WhatsApp channel (QR login via Baileys; see whatsapp.js) ----------
+const wa = createWhatsApp({
+  authRoot: process.env.WA_AUTH_DIR || path.join(ROOT, 'wa-auth'),
+  reconnectMs: Number(process.env.WA_RECONNECT_MS) || 2000,
+  onChange: (channel_id, s) => emit('whatsapp', { channel_id, state: s.state, phone: s.phone }),
+  onText: async ({ channelId, jid, phone, name, text }) => {
+    let c = q1('SELECT c.* FROM contacts c JOIN wa_jids w ON w.contact_id=c.id WHERE w.jid=?', jid) || (phone && q1('SELECT * FROM contacts WHERE phone=?', phone));
+    if (!c) c = findOrCreateContact({ phone, name: name || phone || 'WhatsApp ' + jid.split('@')[0] });
+    run('INSERT OR REPLACE INTO wa_jids(contact_id,jid) VALUES(?,?)', c.id, jid); // replies must go to the same id the contact wrote from
+    await inbound({ channel_id: channelId, contact_id: c.id, text });
+  },
+});
+function deliverWhatsApp(chat, msg) {
+  if (q1('SELECT type FROM channels WHERE id=?', chat.channel_id)?.type !== 'WhatsApp') return;
+  const to = q1('SELECT jid FROM wa_jids WHERE contact_id=?', chat.contact_id)?.jid || (q1('SELECT phone FROM contacts WHERE id=?', chat.contact_id)?.phone || '').replace(/D/g, '') + '@s.whatsapp.net';
+  wa.send(chat.channel_id, to, msg.text).catch((e) => {
+    run("UPDATE messages SET state='Failed' WHERE id=?", msg.id);
+    emit('message', q1('SELECT m.*, mb.name member_name FROM messages m LEFT JOIN members mb ON mb.id=m.member_id WHERE m.id=?', msg.id), { chatId: chat.id });
+    logAct(null, 'WhatsAppSendFailed', e.message);
+  });
 }
 
 // ---------- chatbot engine ----------
@@ -385,7 +410,9 @@ async function tick() {
       const contacts = c.tag_id ? q('SELECT c.id FROM contacts c JOIN contact_tags x ON x.contact_id=c.id WHERE x.tag_id=? AND coalesce(c.blocked,0) IN (0,\'0\')', c.tag_id) : q("SELECT id FROM contacts WHERE coalesce(blocked,0) IN (0,'0')");
       run('UPDATE campaigns SET total=?, sent=0 WHERE id=?', contacts.length, c.id);
       let sent = 0;
-      for (const k of contacts) { try { await sendToContact(k.id, c.channel_id, c); sent++; } catch (e) { console.error('campaign', e.message); } run('UPDATE campaigns SET sent=? WHERE id=?', sent, c.id); }
+      // shortcut: random pause between WhatsApp sends to look less like a bot, not a guarantee against bans; use the official API for real volume
+      const waDelay = q1('SELECT type FROM channels WHERE id=?', c.channel_id)?.type === 'WhatsApp' ? Number(process.env.WA_CAMPAIGN_DELAY_MS ?? 6000) : 0;
+      for (const k of contacts) { if (waDelay && sent) await new Promise(r => setTimeout(r, waDelay * (0.6 + Math.random() * 0.8))); try { await sendToContact(k.id, c.channel_id, c); sent++; } catch (e) { console.error('campaign', e.message); } run('UPDATE campaigns SET sent=? WHERE id=?', sent, c.id); }
       run("UPDATE campaigns SET status='Sent' WHERE id=?", c.id);
       logAct(null, 'BulkSendFinished', `${c.name}: ${sent}/${contacts.length}`);
     }
@@ -629,6 +656,10 @@ on('POST', '/api/v1/ai/summarize', async ({ b }) => { needAI(); const t = transc
 on('GET', '/api/v1/reports', ({ u }) => reports(Object.fromEntries(u.searchParams)));
 on('GET', '/api/v1/activity', ({ me, u }) => q(`SELECT a.*, m.name member_name FROM activity a LEFT JOIN members m ON m.id=a.member_id ${can(me, 'Admin') ? '' : 'WHERE a.member_id=' + Number(me.id)} ORDER BY a.id DESC LIMIT ?`, Math.min(Number(u.searchParams.get('limit') || 200), 1000)));
 on('GET', '/api/v1/webhook-logs', () => q('SELECT * FROM webhook_logs ORDER BY id DESC LIMIT 100'));
+const waChannel = (id) => must(q1('SELECT type FROM channels WHERE id=?', id)?.type === 'WhatsApp', 400, 'Este canal não é do tipo WhatsApp');
+on('GET', '/api/v1/channels/:id/whatsapp', ({ p }) => { waChannel(p.id); return wa.status(p.id); });
+on('POST', '/api/v1/channels/:id/whatsapp/connect', ({ me, p }) => { must(can(me, 'Admin'), 403, 'Sem permissão'); waChannel(p.id); return wa.connect(p.id); });
+on('POST', '/api/v1/channels/:id/whatsapp/logout', async ({ me, p }) => { must(can(me, 'Admin'), 403, 'Sem permissão'); waChannel(p.id); await wa.logout(p.id); return wa.status(p.id); });
 on('GET', '/api/v1/online', () => [...new Set([...streams].filter(s => s.member).map(s => s.member.id))]);
 
 // generic CRUD
@@ -675,6 +706,7 @@ for (const [t, d] of Object.entries(R)) {
       must(other, 400, 'Mantenha ao menos um setor');
       run('UPDATE chats SET sector_id=? WHERE sector_id=?', other.id, p.id);
     }
+    if (t === 'channels') wa.logout(p.id).catch(() => { });
     run(`DELETE FROM ${t} WHERE id=?`, p.id);
     logAct(me.id, d.log + 'Deleted', p.id);
     return { ok: true };
@@ -711,8 +743,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-export { server, db, tick };
+export { server, db, tick, wa };
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   setInterval(() => tick().catch(e => console.error('tick', e)), 5000);
+  wa.restore(q("SELECT id FROM channels WHERE type='WhatsApp'").map(c => c.id));
   server.listen(PORT, () => console.log(`Atende rodando em http://localhost:${PORT}`));
 }

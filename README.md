@@ -51,16 +51,29 @@ Teste ponta a ponta: `npm test`.
   - Disparo: no canal (nova conversa), manualmente na conversa ou via campanha/agendamento.
 - **Agentes de IA + bases de conhecimento** (perguntas e respostas), com transferência para humano.
 - **Campanhas** por etiqueta, imediatas ou agendadas, com progresso. **Mensagens agendadas** (mensagem, nota, chatbot).
-- **Canais**: Widget de site (`/widget.html?c=ID`, embutível via iframe) e API (`POST /api/v1/inbound` para plugar WhatsApp/Instagram via provedor).
+- **Canais**: WhatsApp por QR code, widget de site (`/widget.html?c=ID`, embutível via iframe) e API (`POST /api/v1/inbound` para plugar outro provedor).
 - **Relatórios**: totais, primeira resposta, tempo até finalizar, por atendente/canal/setor/etiqueta/dia/hora/DDD.
 - **Configurações**: perfil, preferências (Enter, notificações, som), tokens de API, empresa, atendentes com papéis (Membro/Operador/Admin/Proprietário), setores, canais, etiquetas, conversas, inatividade, listar todas as conversas, atividades.
 - **Webhooks**: filtro de eventos, assinatura HMAC (`X-Signature`), log de entregas.
 - **API pública** com token pessoal. Rotas documentadas em Configurações › API.
 
+## Conectar o seu WhatsApp
+
+1. Entre no app › **Configurações › Canais de atendimento › Novo canal**, tipo **WhatsApp (QR code)**.
+2. Na linha do canal, clique em **Conectar WhatsApp › Gerar QR code**.
+3. No celular: **WhatsApp › Aparelhos conectados › Conectar um aparelho** e leia o código.
+4. Pronto: as mensagens que chegarem nesse número aparecem em **Conversas** (aba Esperando) e você responde pelo Atende. Chatbots, agentes de IA, etiquetas e campanhas funcionam no canal.
+
+A sessão fica salva em `wa-auth/` (fora do git; quem tiver essa pasta controla o seu WhatsApp, então proteja-a). O servidor religa sozinho ao reiniciar, mas precisa ficar ligado para receber mensagens.
+
+⚠️ **Risco:** é a conexão não oficial do WhatsApp Web (biblioteca Baileys), contra os termos do WhatsApp. O número pode ser banido, principalmente com envio em massa ou mensagens para quem não falou com você. Teste com um chip secundário. As campanhas neste canal já fazem uma pausa aleatória entre envios (`WA_CAMPAIGN_DELAY_MS`, padrão 6000), o que reduz o risco mas não o elimina. Para volume ou uso crítico, use a API oficial da Meta (WhatsApp Cloud API) ligada ao canal de API.
+
+Limites atuais: só texto (imagem, áudio e arquivo chegam como [imagem], [áudio]...), grupos são ignorados e mensagens digitadas direto no celular não aparecem no Atende.
+
 ## Fora do escopo
 
 Estas partes exigem contratos externos:
-- transporte oficial WhatsApp/Instagram (Meta/Gupshup);
+- transporte oficial WhatsApp/Instagram (Meta/Gupshup); o WhatsApp por QR code acima é o caminho não oficial;
 - aprovação de templates;
 - WhatsApp Flows;
 - créditos e cobrança;
